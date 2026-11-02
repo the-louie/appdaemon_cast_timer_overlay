@@ -300,7 +300,9 @@ class CastTimerOverlay(hass.Hass):
         self._tick({})
 
     def _tick(self, kwargs) -> None:
-        now = self.get_now().timestamp()
+        # Epoch seconds, like the sensor's fire_time. Not get_now(): this module has an
+        # async route, and tests/test_async_app_clock.py bans get_now().attr here.
+        now = time.time()
         player = self.get_state(self.media_player)
         app_name = self.get_state(self.media_player, attribute="app_name")
         off_for = None if self._off_since is None else time.monotonic() - self._off_since
