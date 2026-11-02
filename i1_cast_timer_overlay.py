@@ -339,7 +339,10 @@ class CastTimerOverlay(hass.Hass):
         """Launch DashCast fresh and load `url` top-level, as catt's cast_site does.
 
         DashCast stops answering once a page is loaded with force=True, so the
-        app is force-launched every time rather than reused.
+        app is force-launched every time rather than reused. It never
+        acknowledges a URL either (measured 2026-11-02), so success is not
+        awaited; the URL is sent only once DashCast's namespace is up, because a
+        message sent while it reads "Application is starting" is dropped.
         """
         import pychromecast
         from pychromecast.config import APP_DASHCAST
@@ -352,10 +355,13 @@ class CastTimerOverlay(hass.Hass):
             controller = DashCastController()
             cast.register_handler(controller)
             cast.start_app(APP_DASHCAST, force_launch=True, timeout=15)
-            sent = threading.Event()
-            controller.load_url(url, force=True, callback_function=lambda *_: sent.set())
-            if not sent.wait(15):
-                raise TimeoutError("DashCast did not acknowledge the URL within 15 s")
+            deadline = time.monotonic() + 10
+            while controller.namespace not in (cast.status.namespaces or []):
+                if time.monotonic() > deadline:
+                    raise TimeoutError("DashCast did not become ready within 10 s")
+                time.sleep(0.25)
+            controller.load_url(url, force=True)
+            time.sleep(2)  # let the message leave before the socket closes
         finally:
             cast.disconnect(timeout=5)
 
