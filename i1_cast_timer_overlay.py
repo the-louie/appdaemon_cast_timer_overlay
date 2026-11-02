@@ -25,8 +25,11 @@ How it works
 
 When it casts
 -------------
-Only when the Hub's cast entity is ``off`` (ambient screen, clock, or a timer
+When the Hub's cast entity is ``off`` (ambient screen, clock, or a timer
 screen) and has been for ``settle_s``, so an Assistant answer is not cut short.
+Also, at once, when DashCast is showing a page this app did not cast: Home
+Assistant does not report DashCast's URL, and on 2026-11-02 a plain Kiosk cast
+from an older job stayed on screen through a voice timer, hiding it.
 Never while a timer rings: measured 2026-11-02, the ringing screen drops the
 cast 2 s after the timer's fire time, but the sensor shows ``ringing`` only at
 its next poll, 8 s later. So a ``set`` timer whose fire time has passed counts as
@@ -48,6 +51,10 @@ DASHCAST_APP_NAME = "DashCast"
 # A `set` timer whose fire time passed this long ago is a stale sensor, not a
 # ringing timer. Google stops ringing on its own after about 10 minutes.
 RING_WINDOW_S = 600
+
+# Our own force-launch makes the player change state for a few seconds. Changes
+# inside this window after a cast are ours and do not mean someone else took over.
+OWN_CAST_GRACE_S = 30
 
 CORNERS = {
     "top-right": "top:16px;right:16px;align-items:flex-end",
@@ -114,7 +121,7 @@ def is_ringing(timer: Timer, now: float) -> bool:
 
 
 def decide(player_state, app_name, timers: list[Timer], now: float,
-           off_for_s: float | None, settle_s: float) -> tuple[bool, str]:
+           off_for_s: float | None, settle_s: float, ours: bool) -> tuple[bool, str]:
     """Whether to cast now, and why. Pure, so the rules can be tested."""
     if not is_reporting(player_state):
         return False, f"player {player_state}"
@@ -122,7 +129,7 @@ def decide(player_state, app_name, timers: list[Timer], now: float,
         return False, "timer ringing"
     if player_state != "off":
         if app_name == DASHCAST_APP_NAME:
-            return False, "already showing"
+            return (False, "already showing") if ours else (True, "taking over DashCast")
         return False, f"player busy ({app_name or player_state})"
     if off_for_s is None or off_for_s < settle_s:
         return False, "settling"
@@ -235,6 +242,8 @@ class CastTimerOverlay(hass.Hass):
         self._off_since: float | None = (
             time.monotonic() if self.get_state(self.media_player) == "off" else None)
         self._last_cast: float | None = None
+        # True from our successful cast until the player leaves that DashCast session.
+        self._ours = False
         self._cast_failures = 0
         self._cast_lock = threading.Lock()
 
@@ -277,6 +286,9 @@ class CastTimerOverlay(hass.Hass):
     # -- state ----------------------------------------------------------------
 
     def _on_player(self, entity, attribute, old, new, kwargs) -> None:
+        own = self._last_cast is not None and time.monotonic() - self._last_cast < OWN_CAST_GRACE_S
+        if new != old and not own:
+            self._ours = False
         if new == "off" and old != "off":
             self._off_since = time.monotonic()
         elif new != "off":
@@ -292,7 +304,8 @@ class CastTimerOverlay(hass.Hass):
         player = self.get_state(self.media_player)
         app_name = self.get_state(self.media_player, attribute="app_name")
         off_for = None if self._off_since is None else time.monotonic() - self._off_since
-        cast, reason = decide(player, app_name, self._timers, now, off_for, self.settle_s)
+        cast, reason = decide(player, app_name, self._timers, now, off_for, self.settle_s,
+                              self._ours)
         if not cast:
             return
         if self._last_cast is not None and time.monotonic() - self._last_cast < self.min_cast_interval_s:
@@ -308,6 +321,7 @@ class CastTimerOverlay(hass.Hass):
             self._last_cast = time.monotonic()
             self.log(f"casting {self.page_url} ({reason})")
             self._dashcast(self.page_url)
+            self._ours = True
             self._cast_failures = 0
         except Exception as e:
             # Network and pychromecast's own PyChromecastError family are runtime
