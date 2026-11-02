@@ -1,0 +1,32 @@
+# One block per screen. The block name is also the web route unless `route` is set:
+# the page is served at <appdaemon_url>/app/<route>.
+kitchen_photo_frame:
+  module: i1_cast_timer_overlay
+  class: CastTimerOverlay
+
+  # REQUIRED. The Hub's cast entity (Google Cast integration). The app only casts
+  # when this is `off`, and never over anything else the Hub is playing.
+  media_player: media_player.koket
+
+  # REQUIRED. From the Google Home custom integration (leikoilja/ha-google-home).
+  # AppDaemon must have been started after this entity was created.
+  timers_sensor: sensor.koket_kitchen_timers
+
+  # REQUIRED. The Hub's IP address. Give it a fixed lease: DashCast is reached
+  # directly on TCP 8009, without mDNS.
+  cast_host: 10.13.110.104
+
+  # REQUIRED. The slideshow. The Hub loads it, so it must resolve and be reachable
+  # from the Hub, and must allow being framed (no X-Frame-Options: DENY).
+  kiosk_url: https://immich-kiosk.i.louie.se/
+
+  # REQUIRED. AppDaemon's web server as the HUB reaches it -- not a container name.
+  appdaemon_url: http://10.13.110.32:5050
+
+  # Optional.
+  # route: kitchen_photo_frame
+  # corner: top-right          # top-right | top-left | bottom-right | bottom-left
+  # settle_s: 20               # cast only after the Hub has been `off` this long
+  # min_cast_interval_s: 60    # never attempt casts closer together than this
+  # check_interval_s: 10
+  # page_poll_s: 5             # how often the page asks for timers
