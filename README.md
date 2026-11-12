@@ -9,6 +9,16 @@ on a schedule brings the photos back, but covers the timer, so you can't see how
 This AppDaemon app keeps the slideshow on the Hub **and** shows the Hub's own timers
 as a live countdown in a corner, on top of the photos.
 
+It can also show a small info box in another corner: the weather and outdoor
+temperature, the electricity price, the home battery's charge, and whether the solar
+panels are making more power than the house uses.
+
+![A running timer top-right and the info box bottom-right](docs/example-a.png)
+
+| Two timers, snow, an expensive hour | No timer, rain, a mid-priced hour |
+|---|---|
+| ![](docs/example-b.png) | ![](docs/example-c.png) |
+
 ## What it does
 
 - **Overlay page.** The app serves a page from AppDaemon's web server. It shows your
@@ -23,7 +33,14 @@ as a live countdown in a corner, on top of the photos.
 - **Self-healing.** If the cast drops, the photos come back once the screen is free. If
   another DashCast page takes over the screen, the overlay replaces it.
 
-No Home Assistant token reaches the Hub: the page only gets timer data, from the app.
+- **Info box (optional).** A weather icon and the outdoor temperature, over a row with
+  the electricity price, the battery charge and the solar balance (solar power minus
+  house use, in kW, green when the sun covers more than the house uses). The price is
+  green when the current price is among the cheapest 20 % of today's prices, red among
+  the most expensive 10 %, and yellow otherwise. Each value is optional; one whose sensor
+  is unavailable is left out, never guessed.
+
+No Home Assistant token reaches the Hub: the page only gets timer and info data, from the app.
 
 ## Requirements
 
@@ -61,6 +78,16 @@ Turn off any other job that casts to the same Hub, or the two will fight over th
 | `min_cast_interval_s` | | `60` | Minimum time between cast attempts |
 | `check_interval_s` | | `10` | How often the app re-checks the Hub |
 | `page_poll_s` | | `5` | How often the page asks for timers |
+| `info_corner` | | `bottom-right` | Corner of the info box; must differ from `corner` |
+| `temperature_sensor` | | | Outdoor temperature in °C |
+| `weather_entity` | | | A `weather.*` entity; its condition picks the icon. A nowcast entity follows the weather best |
+| `price_sensor` | | | Price per kWh, with today's prices in a `today` attribute (the Nordpool custom integration has this) |
+| `battery_sensor` | | | Battery charge in % |
+| `solar_power_sensor` | | | Solar power in W or kW |
+| `house_power_sensor` | | | House consumption in W or kW |
+
+Leave all info entities out to hide the box. Numbers use a decimal comma and the price
+is shown in `kr`, as in Sweden.
 
 ## Limits
 
@@ -68,6 +95,8 @@ Turn off any other job that casts to the same Hub, or the two will fight over th
   to 15 s to appear. Once it appears, the page counts down every second on its own.
 - Home Assistant does not report which page DashCast is showing. The app therefore
   treats any DashCast session it did not start itself as someone else's, and replaces it.
+
+Example backgrounds: free stock photos from [Unsplash](https://unsplash.com/license).
 
 ## License
 

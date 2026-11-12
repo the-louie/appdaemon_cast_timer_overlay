@@ -30,3 +30,13 @@ kitchen_photo_frame:
   # min_cast_interval_s: 60    # never attempt casts closer together than this
   # check_interval_s: 10
   # page_poll_s: 5             # how often the page asks for timers
+
+  # Optional info box: weather icon and temperature over price, battery and solar
+  # balance. Every entity is optional; leave all out to hide the box.
+  # info_corner: bottom-right  # must differ from `corner`
+  temperature_sensor: sensor.outdoor_temperature
+  weather_entity: weather.home_nowcast   # icon; nowcast = latest update
+  price_sensor: sensor.nordpool_kwh_price   # green: cheapest 20 % of today, red: dearest 10 %
+  battery_sensor: sensor.battery_soc
+  solar_power_sensor: sensor.solar_power      # W or kW
+  house_power_sensor: sensor.house_power          # shown: solar - house, green when positive

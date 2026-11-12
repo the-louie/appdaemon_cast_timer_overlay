@@ -34,6 +34,7 @@ ringing too. Never over anything else the Hub is playing (YouTube, music).
 """
 
 import html
+import math
 import json
 import threading
 import time
@@ -144,13 +145,119 @@ def page_timers(timers: list[Timer], now: float) -> list[dict]:
     return out
 
 
-def render_page(kiosk_url: str, corner: str, poll_s: int) -> str:
+# -- info box: weather, price, battery, solar balance (2026-11-12) ------------
+
+INFO_ENTITIES = ("temperature_sensor", "weather_entity", "price_sensor",
+                 "battery_sensor", "solar_power_sensor", "house_power_sensor")
+
+# Share of today's price slots: the current price is "cheap" when fewer than 20 %
+# of them are cheaper, "dear" when fewer than 10 % are dearer (owner, 2026-11-12).
+CHEAP_SHARE = 0.20
+DEAR_SHARE = 0.10
+
+
+def to_float(value) -> float | None:
+    """A sensor state as a number; None for unavailable, unknown or junk."""
+    if isinstance(value, bool):
+        return None
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return None if math.isnan(out) else out
+
+
+def price_level(current: float | None, today) -> str | None:
+    """cheap | mid | dear for the current price against today's prices."""
+    if current is None or not isinstance(today, list):
+        return None
+    prices = [p for p in (to_float(x) for x in today) if p is not None]
+    if not prices:
+        return None
+    n = len(prices)
+    if sum(p < current for p in prices) < CHEAP_SHARE * n:
+        return "cheap"
+    if sum(p > current for p in prices) < DEAR_SHARE * n:
+        return "dear"
+    return "mid"
+
+
+def power_kw(value, unit) -> float | None:
+    """A power sensor's state in kW, from W or kW."""
+    v = to_float(value)
+    if v is None:
+        return None
+    return v / 1000 if str(unit or "W").strip() == "W" else v
+
+
+def build_info(temp=None, condition=None, price=None, today_prices=None, battery=None,
+               solar_kw=None, house_kw=None) -> dict:
+    """What the page's info box gets. A missing value is left out, never guessed."""
+    info: dict = {}
+    t = to_float(temp)
+    if t is not None:
+        info["temp"] = round(t, 1)
+    if isinstance(condition, str) and condition not in ("unavailable", "unknown", ""):
+        info["condition"] = condition
+    p = to_float(price)
+    if p is not None:
+        info["price"] = round(p, 2)
+        level = price_level(p, today_prices)
+        if level:
+            info["level"] = level
+    b = to_float(battery)
+    if b is not None:
+        info["battery"] = round(b)
+    if solar_kw is not None and house_kw is not None:
+        info["delta_kw"] = round(solar_kw - house_kw, 1)
+    return info
+
+
+def render_page(kiosk_url: str, corner: str, poll_s: int,
+                info_corner: str = "bottom-right") -> str:
     """The overlay page. Config values are escaped for the context they land in."""
     return PAGE_TEMPLATE.format(
         kiosk_url=html.escape(kiosk_url, quote=True),
         corner_css=CORNERS[corner],
+        info_corner_css=CORNERS[info_corner],
         poll_ms=json.dumps(int(poll_s * 1000)),
+        icons_js=ICONS_JS,
     )
+
+
+# Weather icons (48x48 viewBox) keyed by Home Assistant's weather conditions.
+# Inline, so the Hub needs no internet for them. Passed into PAGE_TEMPLATE as a
+# value, so its braces are not format fields.
+ICONS_JS = r"""
+var SUN='<circle cx="24" cy="24" r="9" fill="#FFC83D"/><g stroke="#FFC83D" stroke-width="3" stroke-linecap="round"><path d="M24 5v5M24 38v5M5 24h5M38 24h5M10.6 10.6l3.5 3.5M33.9 33.9l3.5 3.5M10.6 37.4l3.5-3.5M33.9 14.1l3.5-3.5"/></g>';
+var MOON='<path d="M30 8a16 16 0 1 0 10 26A13 13 0 0 1 30 8z" fill="#E8E4C9"/>';
+function CLOUD(y,c){return '<path d="M14 '+(36+y)+'h21a8 8 0 0 0 0-16 11 11 0 0 0-21-2 8 8 0 0 0 0 18z" fill="'+(c||'#F2F4F7')+'"/>';}
+var DROPS='<g stroke="#5AB4FF" stroke-width="3" stroke-linecap="round"><path d="M17 40l-2 5M25 40l-2 5M33 40l-2 5"/></g>';
+var FLAKES='<g fill="#FFFFFF"><circle cx="16" cy="42" r="2.4"/><circle cx="24" cy="45" r="2.4"/><circle cx="32" cy="42" r="2.4"/></g>';
+var BOLT='<path d="M25 37l-5 9h5l-2 7 8-11h-5l3-5z" fill="#FFC83D"/>';
+var FOG='<g stroke="#D7DCE3" stroke-width="3" stroke-linecap="round"><path d="M9 20h30M6 27h36M9 34h30"/></g>';
+var WIND='<g stroke="#D7DCE3" stroke-width="3" stroke-linecap="round" fill="none"><path d="M6 18h24a5 5 0 1 0-5-5M6 26h32a5 5 0 1 1-5 5M6 34h16"/></g>';
+var ICONS={
+ 'sunny':SUN, 'clear-night':MOON,
+ 'partlycloudy':'<g transform="translate(6,-6) scale(.8)">'+SUN+'</g>'+CLOUD(4),
+ 'cloudy':CLOUD(-2,'#C9CFD8').replace('M14','M10')+CLOUD(4),
+ 'rainy':CLOUD(-6)+DROPS,
+ 'pouring':CLOUD(-6,'#AEB6C2')+DROPS.replace('stroke-width="3"','stroke-width="4"'),
+ 'snowy':CLOUD(-6)+FLAKES,
+ 'snowy-rainy':CLOUD(-6)+'<g stroke="#5AB4FF" stroke-width="3" stroke-linecap="round"><path d="M17 40l-2 5M31 40l-2 5"/></g><circle cx="24" cy="43" r="2.4" fill="#fff"/>',
+ 'hail':CLOUD(-6)+FLAKES,
+ 'lightning':CLOUD(-8,'#AEB6C2')+BOLT,
+ 'lightning-rainy':CLOUD(-8,'#AEB6C2')+BOLT+DROPS.replace('M25 40l-2 5',''),
+ 'fog':FOG, 'windy':WIND, 'windy-variant':CLOUD(-8)+WIND,
+ 'exceptional':'<path d="M24 6l20 36H4z" fill="#FFC83D"/><path d="M24 18v12M24 35v2" stroke="#000" stroke-width="3.5" stroke-linecap="round"/>'
+};
+function icon(c){var s=ICONS[c];return s?'<svg viewBox="0 0 48 48" width="58" height="58">'+s+'</svg>':'';}
+// Small row-2 icons; currentColor, so they take the price/kW colour.
+var BOLT_ICON='<svg width="14" height="20" viewBox="0 0 14 20"><path d="M9 0L0 12h6l-2 8 10-13H8z" fill="currentColor"/></svg>';
+var PANEL_ICON='<svg width="24" height="20" viewBox="0 0 24 20"><path d="M5 2h14l4 12H1z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M8.3 2L7 14M15.7 2L17 14M3 8h18" stroke="currentColor" stroke-width="1.6"/><path d="M12 14v4M8 18h8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+function batteryIcon(b){var w=Math.max(0,Math.min(16,Math.round(16*b/100)));
+ return '<svg width="26" height="14" viewBox="0 0 26 14"><rect x="1" y="1" width="21" height="12" rx="3" fill="none" stroke="#fff" stroke-width="2"/><rect x="23" y="4.5" width="2.5" height="5" rx="1" fill="#fff"/><rect x="3.5" y="3.5" width="'+w+'" height="7" rx="1.5" fill="#fff"/></svg>';}
+"""
 
 
 PAGE_TEMPLATE = """<!doctype html>
@@ -166,12 +273,63 @@ iframe{{position:fixed;top:0;left:0;width:100%;height:100%;border:0}}
   font-size:56px;font-weight:600;font-variant-numeric:tabular-nums;line-height:1.15}}
 .t small{{display:block;font-size:20px;font-weight:400;opacity:.85}}
 .t.done{{background:rgba(200,30,30,.88)}}
+#info{{position:fixed;{info_corner_css};display:none;flex-direction:column;z-index:10;
+  background:rgba(0,0,0,.62);color:#fff;border-radius:16px;padding:8px 18px 10px 14px;
+  font-family:Roboto,Arial,sans-serif;font-variant-numeric:tabular-nums;line-height:1.1}}
+#info .row1{{display:flex;align-items:center;justify-content:space-between;gap:8px}}
+#info .temp{{font-size:44px;font-weight:600;white-space:nowrap}}
+#info .row2{{display:flex;justify-content:flex-end;align-items:center;gap:10px;
+  font-size:24px;font-weight:500;white-space:nowrap;margin-top:2px}}
+#info .bat{{display:inline-flex;align-items:center;gap:4px;opacity:.9}}
+#info .kw{{opacity:.9}}
+#info .ic{{display:inline-flex;align-items:center;gap:5px}}
+.cheap{{color:#7CE38B}}.mid{{color:#FFD54A}}.dear{{color:#FF7A6E}}
+#info .kw.pos{{color:#7CE38B;opacity:1}}
 </style></head><body>
 <iframe src="{kiosk_url}" allow="autoplay; fullscreen"></iframe>
 <div id="timers"></div>
+<div id="info"></div>
+<script>{icons_js}</script>
 <script>
 var POLL_MS = {poll_ms}, STALE_S = 60;
-var timers = [], offset = 0, lastOk = 0;
+var timers = [], info = {{}}, offset = 0, lastOk = 0;
+function num(v, d) {{ return v.toFixed(d).replace(".", ",").replace("-", "\u2212"); }}
+function renderInfo(stale) {{
+  var box = document.getElementById("info"), h = "", r2 = [];
+  if (stale || !Object.keys(info).length) {{ box.style.display = "none"; return; }}
+  if (info.temp !== undefined || info.condition) {{
+    h += '<div class="row1">' + (info.condition ? icon(info.condition) : "") +
+      (info.temp !== undefined ? '<span class="temp">' + num(info.temp, 1) + " \u00B0C</span>" : "") +
+      "</div>";
+  }}
+  if (info.price !== undefined)
+    r2.push('<span class="ic ' + (info.level || "") + '">' + BOLT_ICON + num(info.price, 2) + " kr</span>");
+  if (info.battery !== undefined)
+    r2.push('<span class="bat">' + batteryIcon(info.battery) + info.battery + " %</span>");
+  if (info.delta_kw !== undefined)
+    r2.push('<span class="ic kw' + (info.delta_kw > 0 ? " pos" : "") + '">' + PANEL_ICON +
+      (info.delta_kw >= 0 ? "+" : "") + num(info.delta_kw, 1) + " kW</span>");
+  if (r2.length) h += '<div class="row2">' + r2.join("") + "</div>";
+  box.innerHTML = h;
+  box.style.display = "flex";
+  fitRow1(box);
+}}
+// Icon + temperature as wide as the row below (owner 2026-11-12): scale both.
+function fitRow1(box) {{
+  var r1 = box.querySelector(".row1"), r2 = box.querySelector(".row2");
+  if (!r1 || !r2) return;
+  var temp = r1.querySelector(".temp"), svg = r1.querySelector("svg");
+  var target = r2.scrollWidth, size = 44;
+  for (var i = 0; i < 4; i++) {{
+    if (temp) temp.style.fontSize = size + "px";
+    if (svg) {{ svg.setAttribute("width", Math.round(size * 1.3)); svg.setAttribute("height", Math.round(size * 1.3)); }}
+    r1.style.width = "auto";
+    var w = r1.scrollWidth;
+    if (!w || Math.abs(w - target) < 2) break;
+    size = Math.max(32, Math.min(80, size * target / w));
+  }}
+  r1.style.width = target + "px";
+}}
 function fmt(s) {{
   s = Math.max(0, Math.ceil(s));
   var h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), sec = s % 60;
@@ -182,6 +340,7 @@ function poll() {{
   fetch("?format=json", {{cache: "no-store"}}).then(function (r) {{ return r.json(); }})
     .then(function (d) {{
       timers = d.timers || [];
+      info = d.info || {{}};
       offset = d.now - Date.now() / 1000;
       lastOk = Date.now() / 1000;
     }}).catch(function () {{}});
@@ -190,6 +349,7 @@ function render() {{
   var box = document.getElementById("timers");
   var local = Date.now() / 1000, now = local + offset;
   box.textContent = "";
+  renderInfo(local - lastOk > STALE_S);
   if (local - lastOk > STALE_S || !timers.length) {{ box.style.display = "none"; return; }}
   timers.forEach(function (t) {{
     var left = t.status === "paused" ? (t.remaining_s || 0)
@@ -232,8 +392,17 @@ class CastTimerOverlay(hass.Hass):
         self.min_cast_interval_s = self._require_number("min_cast_interval_s", 60)
         self.check_interval_s = int(self._require_number("check_interval_s", 10))
         self.page_poll_s = self._require_number("page_poll_s", 5)
+        self.info_corner = a.get("info_corner", "bottom-right")
+        if self.info_corner not in CORNERS or self.info_corner == self.corner:
+            raise ValueError(f"info_corner must be one of {sorted(CORNERS)} and differ from "
+                             f"corner, got {self.info_corner!r}")
+        # Optional; each one that is set must exist.
+        self.info_entities = {k: self._require_entity(k) for k in INFO_ENTITIES
+                              if self.args.get(k)}
 
-        self._page = render_page(self.kiosk_url, self.corner, self.page_poll_s)
+        self._page = render_page(self.kiosk_url, self.corner, self.page_poll_s,
+                                 self.info_corner)
+        self._info: dict = {}
         self._timers: list[Timer] = parse_timers(
             self.get_state(self.timers_sensor, attribute="timers"))
         self._off_since: float | None = (
@@ -248,6 +417,12 @@ class CastTimerOverlay(hass.Hass):
         self.listen_state(self._on_player, self.media_player)
         self.listen_state(self._on_timers, self.timers_sensor, attribute="timers")
         self.run_every(self._tick, "now", self.check_interval_s)
+        if self.info_entities:
+            for entity in self.info_entities.values():
+                self.listen_state(self._on_info, entity)
+            self._on_info()  # first page load must not wait for the timer below
+            # Nordpool's day list changes at midnight without a state change.
+            self.run_every(self._on_info, "now", 60)
         self.log(f"serving {self.page_url}; casting to {self.cast_host} when "
                  f"{self.media_player} is free")
 
@@ -295,6 +470,28 @@ class CastTimerOverlay(hass.Hass):
     def _on_timers(self, entity, attribute, old, new, kwargs) -> None:
         self._timers = parse_timers(new)
         self._tick({})
+
+    def _on_info(self, *args, **kwargs) -> None:
+        """Refresh the info box cache. The web route is async and must not call get_state."""
+        e = self.info_entities
+
+        def state(key, attribute=None):
+            return self.get_state(e[key], attribute=attribute) if key in e else None
+
+        def kw(key):
+            if key not in e:
+                return None
+            return power_kw(state(key), state(key, "unit_of_measurement"))
+
+        self._info = build_info(
+            temp=state("temperature_sensor"),
+            condition=state("weather_entity"),
+            price=state("price_sensor"),
+            today_prices=state("price_sensor", "today"),
+            battery=state("battery_sensor"),
+            solar_kw=kw("solar_power_sensor"),
+            house_kw=kw("house_power_sensor"),
+        )
 
     def _tick(self, kwargs) -> None:
         # Epoch seconds, like the sensor's fire_time. Not get_now(): this module has an
@@ -372,6 +569,7 @@ class CastTimerOverlay(hass.Hass):
         headers = {"Cache-Control": "no-store"}
         if request.query.get("format") == "json":
             now = time.time()
-            body = json.dumps({"now": now, "timers": page_timers(self._timers, now)})
+            body = json.dumps({"now": now, "timers": page_timers(self._timers, now),
+                               "info": self._info})
             return web.Response(text=body, content_type="application/json", headers=headers)
         return web.Response(text=self._page, content_type="text/html", headers=headers)
