@@ -33,6 +33,7 @@ its next poll, 8 s later. So a ``set`` timer whose fire time has passed counts a
 ringing too. Never over anything else the Hub is playing (YouTube, music).
 """
 
+import hashlib
 import html
 import math
 import json
@@ -215,14 +216,28 @@ def build_info(temp=None, condition=None, price=None, today_prices=None, battery
 
 def render_page(kiosk_url: str, corner: str, poll_s: int,
                 info_corner: str = "bottom-right") -> str:
-    """The overlay page. Config values are escaped for the context they land in."""
-    return PAGE_TEMPLATE.format(
+    """The overlay page. Config values are escaped for the context they land in.
+
+    The page carries a hash of itself; the JSON poll returns the hash of the page
+    AppDaemon serves now, so a Hub showing an older page reloads it.
+    """
+    page = PAGE_TEMPLATE.format(
         kiosk_url=html.escape(kiosk_url, quote=True),
         corner_css=CORNERS[corner],
         info_corner_css=CORNERS[info_corner],
         poll_ms=json.dumps(int(poll_s * 1000)),
         icons_js=ICONS_JS,
+        page_version=_VERSION_SLOT,
     )
+    return page.replace(_VERSION_SLOT, hashlib.sha1(page.encode()).hexdigest()[:12])
+
+
+_VERSION_SLOT = "@@page-version@@"
+
+
+def page_version(page: str) -> str:
+    """The hash render_page() put into the page."""
+    return page.split('var PAGE_VERSION = "', 1)[1].split('"', 1)[0]
 
 
 # Weather icons (48x48 viewBox) keyed by Home Assistant's weather conditions.
@@ -292,6 +307,7 @@ iframe{{position:fixed;top:0;left:0;width:100%;height:100%;border:0}}
 <script>{icons_js}</script>
 <script>
 var POLL_MS = {poll_ms}, STALE_S = 60;
+var PAGE_VERSION = "{page_version}";
 var timers = [], info = {{}}, offset = 0, lastOk = 0;
 function num(v, d) {{ return v.toFixed(d).replace(".", ",").replace("-", "\u2212"); }}
 function renderInfo(stale) {{
@@ -339,6 +355,8 @@ function fmt(s) {{
 function poll() {{
   fetch("?format=json", {{cache: "no-store"}}).then(function (r) {{ return r.json(); }})
     .then(function (d) {{
+      // AppDaemon serves a newer page (app updated): load it.
+      if (d.page && d.page !== PAGE_VERSION) {{ location.reload(); return; }}
       timers = d.timers || [];
       info = d.info || {{}};
       offset = d.now - Date.now() / 1000;
@@ -402,6 +420,7 @@ class CastTimerOverlay(hass.Hass):
 
         self._page = render_page(self.kiosk_url, self.corner, self.page_poll_s,
                                  self.info_corner)
+        self._page_version = page_version(self._page)
         self._info: dict = {}
         self._timers: list[Timer] = parse_timers(
             self.get_state(self.timers_sensor, attribute="timers"))
@@ -570,6 +589,6 @@ class CastTimerOverlay(hass.Hass):
         if request.query.get("format") == "json":
             now = time.time()
             body = json.dumps({"now": now, "timers": page_timers(self._timers, now),
-                               "info": self._info})
+                               "info": self._info, "page": self._page_version})
             return web.Response(text=body, content_type="application/json", headers=headers)
         return web.Response(text=self._page, content_type="text/html", headers=headers)
